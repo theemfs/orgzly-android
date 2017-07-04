@@ -10,8 +10,8 @@ import android.content.res.Resources;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.RemoteException;
-import android.support.v4.content.LocalBroadcastManager;
 import android.text.TextUtils;
+
 import com.orgzly.BuildConfig;
 import com.orgzly.R;
 import com.orgzly.android.prefs.AppPreferences;
@@ -22,6 +22,7 @@ import com.orgzly.android.provider.clients.DbClient;
 import com.orgzly.android.provider.clients.FiltersClient;
 import com.orgzly.android.provider.clients.NotesClient;
 import com.orgzly.android.provider.clients.ReposClient;
+import com.orgzly.android.provider.models.DbNote;
 import com.orgzly.android.reminders.ReminderService;
 import com.orgzly.android.repos.Repo;
 import com.orgzly.android.repos.RepoFactory;
@@ -49,6 +50,7 @@ import java.io.InputStream;
 import java.io.PrintWriter;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -725,6 +727,8 @@ public class Shelf {
 
     /**
      * Using current states configuration, update states and titles for all notes.
+     * Also updates created time in the database for all notes based on the created property keyword,
+     * but does not affect the property itself in the org file.
      * Keywords that were part of the title can become states and vice versa.
      * Affected books' mtime will *not* be updated.
      *
@@ -782,6 +786,8 @@ public class Shelf {
 
                 OrgHead newHead = file.getHeadsInList().get(0).getHead();
 
+                ContentValues values = new ContentValues();
+
                 /* Update if state, title or priority are different. */
                 if (! TextUtils.equals(newHead.getState(), head.getState()) ||
                     ! TextUtils.equals(newHead.getTitle(), head.getTitle()) ||
@@ -789,17 +795,44 @@ public class Shelf {
 
                     modifiedNotesCount++;
 
-                    ContentValues values = new ContentValues();
                     values.put(ProviderContract.Notes.UpdateParam.TITLE, newHead.getTitle());
                     values.put(ProviderContract.Notes.UpdateParam.STATE, newHead.getState());
                     values.put(ProviderContract.Notes.UpdateParam.PRIORITY, newHead.getPriority());
-
-                    ops.add(ContentProviderOperation
-                            .newUpdate(ContentUris.withAppendedId(ProviderContract.Notes.ContentUri.notes(), cursor.getLong(0)))
-                            .withValues(values)
-                            .build()
-                    );
                 }
+
+                /* Update created time.
+                 * Because the note was only modified in the internal database, modifiedNotesCount
+                 * isn't incremented.
+                 * We use the properties from the database because NotesClient.fromCursor returns
+                 * a note without any properties
+                 */
+                found: {
+                    for (OrgProperty prop : NotesClient.getNoteProperties(mContext, NotesClient.idFromCursor(cursor))) {
+                        if (prop.getName().equals(AppPreferences.createdAtProperty(mContext))) {
+                            try {
+                                OrgDateTime x = OrgDateTime.parse(prop.getValue());
+                                values.put(DbNote.Column.CREATED_AT, x.getCalendar().getTimeInMillis());
+                                break found;
+                            } catch (IllegalArgumentException e) {
+                                // Parsing failed, give up immediately and insert null
+                                break;
+                            }
+                        }
+                    }
+                    if (cursor.getColumnIndex(DbNote.Column.CREATED_AT_INTERNAL) != -1) {
+                        values.put(DbNote.Column.CREATED_AT, cursor.getLong(cursor.getColumnIndex(DbNote.Column.CREATED_AT_INTERNAL)));
+                    } else {
+                        long d = new Date().getTime();
+                        values.put(DbNote.Column.CREATED_AT, d);
+                        values.put(DbNote.Column.CREATED_AT_INTERNAL, d);
+                    }
+                }
+
+                ops.add(ContentProviderOperation
+                        .newUpdate(ContentUris.withAppendedId(ProviderContract.Notes.ContentUri.notes(), cursor.getLong(0)))
+                        .withValues(values)
+                        .build()
+                );
 
                 if (listener != null) {
                     listener.noteParsed(current, total, "Updating notes...");

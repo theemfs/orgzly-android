@@ -76,7 +76,6 @@ public class NotesView {
 
         public static String INHERITED_TAGS = "inherited_tags";
 
-
         public static String SCHEDULED_RANGE_STRING = "scheduled_range_string"; // rename to just scheduled string
         public static String SCHEDULED_TIME_STRING = "scheduled_time_string";
         public static String SCHEDULED_TIME_END_STRING = "scheduled_time_string";

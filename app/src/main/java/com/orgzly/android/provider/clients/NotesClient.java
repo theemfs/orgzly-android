@@ -12,12 +12,14 @@ import android.net.Uri;
 import android.os.RemoteException;
 import android.support.v4.content.CursorLoader;
 import android.text.TextUtils;
+
 import com.orgzly.BuildConfig;
 import com.orgzly.R;
 import com.orgzly.android.Note;
 import com.orgzly.android.NotePosition;
 import com.orgzly.android.NotesBatch;
 import com.orgzly.android.SearchQuery;
+import com.orgzly.android.prefs.AppPreferences;
 import com.orgzly.android.provider.DatabaseUtils;
 import com.orgzly.android.provider.GenericDatabaseUtils;
 import com.orgzly.android.provider.ProviderContract;
@@ -34,6 +36,7 @@ import com.orgzly.org.datetime.OrgRange;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -84,7 +87,7 @@ public class NotesClient {
         return properties;
     }
 
-    public static void toContentValues(ContentValues values, Note note) {
+    public static void toContentValues(ContentValues values, Note note, String createdProp) {
         values.put(ProviderContract.Notes.UpdateParam.BOOK_ID, note.getPosition().getBookId());
 
         values.put(ProviderContract.Notes.UpdateParam.LFT, note.getPosition().getLft());
@@ -96,10 +99,10 @@ public class NotesClient {
 
         values.put(ProviderContract.Notes.UpdateParam.POSITION, 0); // TODO: Remove
 
-        toContentValues(values, note.getHead());
+        toContentValues(values, note.getHead(), createdProp);
     }
 
-    private static void toContentValues(ContentValues values, OrgHead head) {
+    private static void toContentValues(ContentValues values, OrgHead head, String createdProp) {
         values.put(ProviderContract.Notes.UpdateParam.TITLE, head.getTitle());
 
         if (head.hasScheduled()) {
@@ -124,6 +127,19 @@ public class NotesClient {
             values.put(ProviderContract.Notes.UpdateParam.DEADLINE_STRING, head.getDeadline().toString());
         } else {
             values.putNull(ProviderContract.Notes.UpdateParam.DEADLINE_STRING);
+        }
+
+        for (int i = 0; i < head.getProperties().size(); i++) {
+            if (head.getProperties().get(i).getName().equals(createdProp)) {
+                try {
+                    OrgDateTime x = OrgDateTime.parse(head.getProperties().get(i).getValue());
+                    values.put(DbNote.Column.CREATED_AT, x.getCalendar().getTimeInMillis());
+                    break;
+                } catch (IllegalArgumentException e) {
+                    // Parsing failed, give up immediately
+                    break;
+                }
+            }
         }
 
         values.put(ProviderContract.Notes.UpdateParam.PRIORITY, head.getPriority());
@@ -213,11 +229,36 @@ public class NotesClient {
      * Updates note by its ID.
      */
     public static int update(Context context, Note note) {
+        // Get created prop name
+        String createdProp = AppPreferences.createdAtProperty(context);
+
         ContentValues values = new ContentValues();
-        toContentValues(values, note.getHead());
+        toContentValues(values, note, createdProp);
 
         Uri noteUri = ContentUris.withAppendedId(ProviderContract.Notes.ContentUri.notes(), note.getId());
         Uri uri = noteUri.buildUpon().appendQueryParameter("bookId", String.valueOf(note.getPosition().getBookId())).build();
+
+        if (!values.containsKey(DbNote.Column.CREATED_AT)) {
+            Cursor cursor = context.getContentResolver().query(
+                    ProviderContract.Notes.ContentUri.notes(), null,
+                    ProviderContract.Notes.QueryParam._ID + "=" + note.getId(), null, null);
+
+            try {
+                if (cursor.moveToFirst()) {
+                    if (cursor.getColumnIndex(DbNote.Column.CREATED_AT_INTERNAL) != -1) {
+                        values.put(DbNote.Column.CREATED_AT, cursor.getLong(cursor.getColumnIndex(DbNote.Column.CREATED_AT_INTERNAL)));
+                    } else {
+                        long d = new Date().getTime();
+                        values.put(DbNote.Column.CREATED_AT, d);
+                        values.put(DbNote.Column.CREATED_AT_INTERNAL, d);
+                    }
+                } else {
+                    throw new NoSuchElementException("Note with id " + note.getId() + " was not found in " + ProviderContract.Notes.ContentUri.notes());
+                }
+            } finally {
+                cursor.close();
+            }
+        }
 
         ArrayList<ContentProviderOperation> ops = new ArrayList<>();
 
@@ -268,9 +309,17 @@ public class NotesClient {
      * Insert as last note if position is not specified.
      */
     public static Note create(Context context, Note note, NotePlace target) {
+        // Get created prop name
+        String createdProp = AppPreferences.createdAtProperty(context);
 
         ContentValues values = new ContentValues();
-        toContentValues(values, note);
+        toContentValues(values, note, createdProp);
+
+        if (!values.containsKey(DbNote.Column.CREATED_AT)) {
+            long d = new Date().getTime();
+            values.put(DbNote.Column.CREATED_AT, d);
+        }
+        values.put(DbNote.Column.CREATED_AT_INTERNAL, values.getAsLong(DbNote.Column.CREATED_AT));
 
         Uri insertUri;
 
@@ -488,6 +537,9 @@ public class NotesClient {
 
                 } else if (so.getType() == SearchQuery.SortOrder.Type.PRIORITY) {
                     orderByColumns.add("COALESCE(" + ProviderContract.Notes.QueryParam.PRIORITY + ", '" + defaultPriority + "')" + (so.isAscending() ? "" : " DESC"));
+                } else if (so.getType() == SearchQuery.SortOrder.Type.CREATED) {
+                    orderByColumns.add(DbNote.Column.CREATED_AT + " IS NULL");
+                    orderByColumns.add(DbNote.Column.CREATED_AT + (so.isAscending() ? "" : " DESC"));
                 }
             }
         } else {

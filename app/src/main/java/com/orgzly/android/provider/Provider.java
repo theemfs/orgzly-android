@@ -72,6 +72,7 @@ import java.io.InputStreamReader;
 import java.io.Reader;
 import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.Date;
 import java.util.GregorianCalendar;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -541,7 +542,7 @@ public class Provider extends ContentProvider {
         Note rootNote = Note.newRootNote(bookId);
 
         ContentValues values = new ContentValues();
-        NotesClient.toContentValues(values, rootNote);
+        NotesClient.toContentValues(values, rootNote, AppPreferences.createdAtProperty(getContext()));
         replaceTimestampRangeStringsWithIds(db, values);
 
         return db.insertOrThrow(DbNote.TABLE, null, values);
@@ -1450,7 +1451,13 @@ public class Provider extends ContentProvider {
                             ContentValues values = new ContentValues();
 
                             DbNote.toContentValues(values, position);
-                            DbNote.toContentValues(db, values, node.getHead());
+                            DbNote.toContentValues(db, values, node.getHead(), AppPreferences.createdAtProperty(getContext()));
+
+                            if (!values.containsKey(DbNote.Column.CREATED_AT)) {
+                                long d = new Date().getTime();
+                                values.put(DbNote.Column.CREATED_AT, d);
+                            }
+                            values.put(DbNote.Column.CREATED_AT_INTERNAL, values.getAsLong(DbNote.Column.CREATED_AT));
 
                             long noteId = db.insertOrThrow(DbNote.TABLE, null, values);
 
